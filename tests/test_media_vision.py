@@ -17,7 +17,7 @@ class MediaVisionTest(unittest.TestCase):
 
         self.assertEqual(base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1")
         self.assertEqual(api_key, "key")
-        self.assertEqual(model, "qwen3-vl-flash")
+        self.assertEqual(model, "qwen3-vl-plus")
 
     def test_describe_sends_image_data_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

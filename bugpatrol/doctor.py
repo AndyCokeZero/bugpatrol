@@ -4,14 +4,29 @@ from __future__ import annotations
 
 import os
 import shutil
+import struct
 import subprocess
+import zlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from bugpatrol.config import ProjectConfig
 from bugpatrol.fields import NATIVE_ISSUE_TYPES, default_field_specs
 from bugpatrol.github import GitHubCliIssuesClient
 from bugpatrol.github_fields import GitHubIssueFieldsClient
-from bugpatrol.lark import LarkOpenApiMessengerClient
+from bugpatrol.lark import DownloadedLarkResource, LarkOpenApiMessengerClient
+from bugpatrol.resources import (
+    DESCRIPTION_UNAVAILABLE_PREFIX,
+    CommandResourceDescriber,
+    LarkResourceRef,
+    _format_command_part,
+)
+
+# The media probe is one real call to the vision endpoint. Cap it well below the
+# production timeout (a 32x32 probe answers in seconds) so a hanging endpoint
+# fails the doctor instead of stalling it for the project's full 300s budget.
+_MEDIA_PROBE_TIMEOUT_SECONDS = 60
+_MEDIA_PROBE_PIXELS = 32
 
 
 @dataclass(frozen=True)
@@ -87,10 +102,61 @@ def _check_asset_repo(config: ProjectConfig, github: GitHubCliIssuesClient) -> s
 def _check_media_command(config: ProjectConfig) -> str:
     if not config.media.description_command:
         return "not configured"
-    executable = config.media.description_command[0]
+    probe_ref = LarkResourceRef(message_id="doctor-probe", kind="image", resource_key="doctor-probe")
+    probe_resource = DownloadedLarkResource(
+        content=_probe_image_bytes(),
+        content_type="image/png",
+        filename="doctor-probe.png",
+    )
+    # Resolve {python} (and friends) first: the command usually *starts* with a
+    # placeholder, and `which "{python}"` would report a missing binary for a
+    # config whose interpreter is plainly there.
+    executable = _format_command_part(
+        config.media.description_command[0],
+        path=Path(probe_resource.filename),
+        ref=probe_ref,
+        resource=probe_resource,
+    )
     if shutil.which(executable) is None:
         raise ValueError(f"media command not found: {executable}")
-    return executable
+    # `which` only proves the binary is there. A media command whose model name
+    # was retired upstream, or whose API key is missing, passes that check and
+    # then fails on every real attachment — quietly: the describer returns a
+    # placeholder string instead of raising, so triage carries on and the only
+    # trace is a line in agent-turns.jsonl. That is how the whole fleet lost its
+    # media descriptions when the default model was retired (2026-10-12). Probe
+    # the command for real, once, on an image generated here.
+    describer = CommandResourceDescriber(
+        command=config.media.description_command,
+        timeout_seconds=min(config.media.description_timeout_seconds, _MEDIA_PROBE_TIMEOUT_SECONDS),
+    )
+    description = describer.describe(ref=probe_ref, resource=probe_resource).strip()
+    if not description:
+        raise ValueError("media command returned an empty description")
+    if description.startswith(DESCRIPTION_UNAVAILABLE_PREFIX):
+        raise ValueError(description)
+    return f"{executable} (live probe ok)"
+
+
+def _probe_image_bytes(size: int = _MEDIA_PROBE_PIXELS) -> bytes:
+    """A minimal solid-red PNG. The command only has to prove it accepts the
+    request end to end; what the model answers about it does not matter."""
+    raw = (b"\x00" + b"\xff\x00\x00" * size) * size
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _check_ffmpeg(config: ProjectConfig) -> str:

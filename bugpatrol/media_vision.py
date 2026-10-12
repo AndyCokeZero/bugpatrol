@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3-vl-flash"
+DEFAULT_MODEL = "qwen3-vl-plus"
 DEFAULT_QUESTION = (
     "详细描述这个媒体文件的内容。若画面出现悬浮的调试信息浮层（dev overlay，"
     "如 FPS、网络、内存、设备信息等实时数据），这是开发/测试环境正常组件，不是 bug，"

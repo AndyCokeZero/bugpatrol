@@ -263,6 +263,13 @@ class GitHubAssetRepoStore:
         return index < len(args) and args[index] in _NETWORK_GIT_SUBCOMMANDS
 
 
+# A description that failed comes back as text rather than an exception, so the
+# caller can keep the run going with a placeholder. Anything that has to *tell a
+# description from a failure* — bugpatrol/doctor.py's live probe — matches this
+# prefix instead of re-deriving it.
+DESCRIPTION_UNAVAILABLE_PREFIX = "vision description unavailable:"
+
+
 class CommandResourceDescriber:
     def __init__(
         self,
@@ -305,7 +312,10 @@ class CommandResourceDescriber:
                     )
                 except subprocess.TimeoutExpired:
                     if attempt >= self._retries:
-                        return f"vision description unavailable: timed out after {self._timeout_seconds}s"
+                        return (
+                            f"{DESCRIPTION_UNAVAILABLE_PREFIX} "
+                            f"timed out after {self._timeout_seconds}s"
+                        )
                     time.sleep(self._retry_backoff_seconds)
                     continue
                 if completed.returncode == 0 and completed.stdout.strip():
@@ -315,7 +325,7 @@ class CommandResourceDescriber:
         if completed.returncode == 0 and completed.stdout.strip():
             return completed.stdout.strip()
         detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
-        return f"vision description unavailable: {detail[:300]}"
+        return f"{DESCRIPTION_UNAVAILABLE_PREFIX} {detail[:300]}"
 
 
 class CommandResourceRedactor:
