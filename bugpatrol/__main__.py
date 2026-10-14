@@ -17,6 +17,7 @@ from bugpatrol.chat_discovery import (
     apply_branch_chats,
     discover_branch_chats,
 )
+from bugpatrol.ci_watch import watch_ci
 from bugpatrol.close_audit import audit_issue_close
 from bugpatrol.config import load_project_config
 from bugpatrol.doctor import run_doctor
@@ -513,6 +514,22 @@ def main(argv: list[str] | None = None) -> int:
     cleanup_assets.add_argument("--message-id-prefix", default="", help="only match asset paths with this prefix")
     cleanup_assets.add_argument("--delete", action="store_true", help="delete matching files or directories")
     cleanup_assets.add_argument("--push", action="store_true", help="commit and push after --delete")
+
+    ci_watch = sub.add_parser(
+        "ci-watch",
+        help="alert a Lark chat when a repo's CI goes red on a branch",
+    )
+    ci_watch.add_argument("project_config", type=Path, help="project config supplying the Lark app")
+    ci_watch.add_argument("--repo", required=True, help="repo to watch, as owner/name")
+    ci_watch.add_argument("--branch", default="main", help="branch whose newest settled commit is judged")
+    ci_watch.add_argument("--chat-id", required=True, help="Lark chat to alert into")
+    ci_watch.add_argument(
+        "--state-path",
+        type=Path,
+        default=Path.home() / ".bugpatrol" / "ci-watch-state.json",
+        help="file remembering the red commit already alerted on",
+    )
+    ci_watch.add_argument("--write", action="store_true", help="send the alert and persist state")
 
     args = parser.parse_args(argv)
 
@@ -1429,6 +1446,32 @@ def main(argv: list[str] | None = None) -> int:
                 ensure_ascii=False,
             )
         )
+        return 0
+
+    if args.command == "ci-watch":
+        config = load_project_config(args.project_config)
+        github = GitHubCliIssuesClient(gh=config.github_cli, transient_retries=8)
+        lark = None
+        if args.write:
+            app_secret = os.environ.get(config.lark.app_secret_env)
+            if not app_secret:
+                print(f"missing env: {config.lark.app_secret_env}", file=sys.stderr)
+                return 2
+            lark = LarkOpenApiMessengerClient(
+                app_id=config.lark.app_id,
+                app_secret=app_secret,
+                base_url=config.lark.api_base_url,
+            )
+        outcome = watch_ci(
+            repo=args.repo,
+            branch=args.branch,
+            chat_id=args.chat_id,
+            runs=github,
+            lark=lark,
+            state_path=args.state_path,
+            dry_run=not args.write,
+        )
+        print(json.dumps(outcome.__dict__, ensure_ascii=False))
         return 0
 
     if args.command == "cleanup-assets":

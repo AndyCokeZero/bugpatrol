@@ -18,6 +18,7 @@ from bugpatrol.clients import (
     OpenPullRequest,
     ReviewComment,
     ReviewThread,
+    WorkflowRun,
 )
 from bugpatrol.gh_transient import run_gh_with_transient_retries
 from bugpatrol.github_fields import GITHUB_API_VERSION, GitHubIssueFieldsClient
@@ -860,6 +861,50 @@ class GitHubCliIssuesClient:
                     run_id=run_id,
                     name=str(item.get("name") or ""),
                     workflow_name=str(item.get("workflowName") or ""),
+                )
+            )
+        return tuple(runs)
+
+    def list_recent_workflow_runs(
+        self, *, repo: str, branch: str, limit: int = 20
+    ) -> tuple[WorkflowRun, ...]:
+        """Recent CI runs on one branch, newest first.
+
+        The tool-CI watch needs a *branch's* state rather than one commit's runs
+        (which is what ``list_failed_runs_for_sha`` answers): a red main is a
+        standing condition, and only the newest commit says whether it still
+        holds.
+        """
+        result = self._run(
+            [
+                "run",
+                "list",
+                "--repo",
+                repo,
+                "--branch",
+                branch,
+                "--json",
+                "databaseId,workflowName,status,conclusion,headSha,url",
+                "--limit",
+                str(limit),
+            ]
+        )
+        data = json.loads(result.stdout)
+        runs: list[WorkflowRun] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            run_id = item.get("databaseId")
+            if not isinstance(run_id, int):
+                continue
+            runs.append(
+                WorkflowRun(
+                    run_id=run_id,
+                    workflow_name=str(item.get("workflowName") or ""),
+                    status=str(item.get("status") or ""),
+                    conclusion=str(item.get("conclusion") or ""),
+                    head_sha=str(item.get("headSha") or ""),
+                    url=str(item.get("url") or ""),
                 )
             )
         return tuple(runs)

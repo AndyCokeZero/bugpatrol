@@ -84,6 +84,24 @@ class FailedRun:
 
 
 @dataclass(frozen=True)
+class WorkflowRun:
+    """One CI workflow run on a branch, as listed by ``gh run list``.
+
+    ``status`` is kept apart from ``conclusion`` because only the first says
+    whether the run is over: a queued or in-flight run has no verdict yet, and
+    reading its empty conclusion as "not a failure" would call a branch green
+    while its build is still running.
+    """
+
+    run_id: int
+    workflow_name: str
+    status: str
+    conclusion: str
+    head_sha: str
+    url: str
+
+
+@dataclass(frozen=True)
 class GitHubPullRequest:
     number: int
     url: str
