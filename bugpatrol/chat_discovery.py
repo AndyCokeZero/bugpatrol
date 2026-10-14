@@ -1,15 +1,23 @@
 """Discover branch-scoped topic chats by convention instead of config.
 
-A project's CI creates one Lark topic group per feature branch, named exactly
-after the branch (see fived `.github/workflows/bugpatrol-feature-topic.yml`).
-Listing those groups in `[[lark.branch_chats]]` meant every new branch needed a
-config edit plus a watcher restart before its group was scanned at all -- until
-then bugs reported there were silently dropped.
+A project's CI creates one Lark topic group per feature branch (see fived
+`.github/workflows/bugpatrol-feature-topic.yml`). Listing those groups in
+`[[lark.branch_chats]]` meant every new branch needed a config edit plus a
+watcher restart before its group was scanned at all -- until then bugs reported
+there were silently dropped.
 
-The group name IS the branch, so the mapping can be derived: take the chats the
-bot belongs to, keep those whose name matches a live remote branch, and treat
-that branch as the chat's target branch. Config entries stay supported as
-overrides for groups that predate (or don't follow) the convention.
+The group name carries the owning repo and the branch -- "fived ·
+feature-moments", main group "fived · main" -- so the mapping can be derived:
+take the chats the bot belongs to, keep the ones prefixed with this project's
+`lark.chat_prefix` whose branch is live on the remote, and treat that branch as
+the chat's target branch. Config entries stay supported as overrides for groups
+that predate (or don't follow) the convention.
+
+The prefix is what keeps projects apart. One Lark app serves every project, so
+`list_bot_chats` returns every project's groups, and matching on the bare branch
+name picked up a group whose branch happened to exist in two repos -- the same
+topic then became an issue in both (23 pairs before this was caught). A name
+that carries no prefix is reported as unmatched rather than guessed at.
 """
 
 from __future__ import annotations
@@ -18,7 +26,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
-from bugpatrol.config import ProjectConfig
+from bugpatrol.config import CHAT_NAME_SEPARATOR, ProjectConfig
 
 
 class ChatLister(Protocol):
@@ -33,10 +41,26 @@ class BranchLister(Protocol):
 
 @dataclass(frozen=True)
 class BranchChatDiscovery:
-    """Chat id -> branch, plus the names that were considered but unmatched."""
+    """Chat id -> branch, plus the names that might be ours but were not claimed.
+
+    `unmatched_chats` is a migration signal, not a dump of every group the bot
+    sits in: it holds groups that carry this project's prefix but whose branch
+    is gone (an archived feature group), and un-prefixed groups named after one
+    of this project's live branches (the pre-contract naming). Groups belonging
+    to another project are silently skipped -- they are not this project's to
+    report on.
+    """
 
     branch_chats: dict[str, str]
     unmatched_chats: tuple[str, ...]
+
+
+def _split_chat_name(name: str) -> tuple[str, str] | None:
+    """Split "<prefix> · <branch>"; None when the name carries no prefix."""
+    prefix, separator, branch = name.partition(CHAT_NAME_SEPARATOR)
+    if not separator:
+        return None
+    return prefix.strip(), branch.strip()
 
 
 def discover_branch_chats(
@@ -45,25 +69,44 @@ def discover_branch_chats(
     github: BranchLister,
     config: ProjectConfig,
 ) -> BranchChatDiscovery:
-    """Map bot chats named after a live remote branch to that branch.
+    """Map this project's topic chats to their branch, by name.
 
-    The main watcher chat is never remapped, and "main" is not a matchable
-    branch: it is the value `branch_for_chat` already returns for every
-    unmapped chat, so a group named after it would be the main chat under
-    another name rather than a branch topic.
+    A chat is claimed only when its name is prefixed with this project's
+    `chat_prefix` and its branch token is either "main" or live on the remote.
+    Everything else is left alone: another project's prefix means the group is
+    theirs, and an un-prefixed name is never guessed at -- guessing is what let
+    a group whose branch exists in two repos be claimed by both.
+
+    The main watcher chat, and any chat already pinned in `[[lark.branch_chats]]`,
+    are skipped: their mapping is declared, so discovery has nothing to add and
+    should not report them as unmatched.
     """
     branches = set(github.list_remote_branch_names(repo=config.github_repo))
     branches.discard("main")
+    prefix = config.lark.chat_prefix
+    if not prefix:
+        raise ValueError("config.lark.chat_prefix is empty; topic groups cannot be attributed")
+    declared = set(config.lark.branch_chats or {})
     matched: dict[str, str] = {}
     unmatched: list[str] = []
     for chat_id, name in lark.list_bot_chats():
-        if chat_id == config.lark.chat_id:
+        if chat_id == config.lark.chat_id or chat_id in declared:
             continue
-        branch = name.strip()
-        if branch and branch in branches:
+        raw = name.strip()
+        split = _split_chat_name(raw)
+        if split is None:
+            # Pre-contract naming. Report it if it looks like ours rather than
+            # claiming it: the same name may be a live branch in another repo.
+            if raw and raw in branches:
+                unmatched.append(raw)
+            continue
+        chat_prefix, branch = split
+        if chat_prefix != prefix:
+            continue
+        if branch == "main" or branch in branches:
             matched[chat_id] = branch
-        else:
-            unmatched.append(name)
+        elif branch:
+            unmatched.append(raw)
     return BranchChatDiscovery(branch_chats=matched, unmatched_chats=tuple(unmatched))
 
 

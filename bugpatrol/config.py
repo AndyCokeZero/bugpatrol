@@ -21,6 +21,13 @@ _LARK_PLATFORM_APPLINK_DOMAINS = {
     "feishu": "applink.feishu.cn",
 }
 
+# Separator between the owning-repo prefix and the branch in a topic group's
+# name: "fived · feature-moments". Branch names cannot contain spaces, so the
+# first occurrence splits unambiguously. Shared with chat discovery, which is
+# why it lives here (the naming contract belongs to the config, not the
+# discovery that reads it).
+CHAT_NAME_SEPARATOR = " · "
+
 
 @dataclass(frozen=True)
 class LarkConfig:
@@ -39,6 +46,12 @@ class LarkConfig:
     # The main `chat_id` above always maps to "main". A topic posted in one of
     # these groups declares (does not infer) that its build was the branch.
     branch_chats: dict[str, str] | None = None
+    # Topic groups are named "<chat_prefix> · <branch>", the main group
+    # "<chat_prefix> · main". The prefix names the owning repo, which is what
+    # keeps a group whose name matches a branch in two repos from being claimed
+    # by both projects (that is how one topic produced two issues). Defaults to
+    # the repo's own name, so a new project needs no config.
+    chat_prefix: str = ""
 
     @property
     def api_base_url(self) -> str:
@@ -420,9 +433,11 @@ def parse_project_config(data: dict[str, Any]) -> ProjectConfig:
     if platform not in _LARK_PLATFORM_API_BASE_URLS:
         raise ValueError('lark.platform must be "lark" or "feishu"')
     branch_chats = _parse_branch_chats(lark, main_chat_id=_required_str(lark, "chat_id"))
+    github_repo = _required_str(data, "github_repo")
+    chat_prefix = _parse_chat_prefix(lark, github_repo=github_repo)
 
     return ProjectConfig(
-        github_repo=_required_str(data, "github_repo"),
+        github_repo=github_repo,
         # expanduser so one config works across machines with different homes.
         # BUGPATROL_GITHUB_CLI overrides the config value at runtime so one
         # shared config serves two runtimes: the watcher keeps the config's
@@ -445,6 +460,7 @@ def parse_project_config(data: dict[str, Any]) -> ProjectConfig:
             or _default_message_url_template(platform),
             platform=platform,
             branch_chats=branch_chats or None,
+            chat_prefix=chat_prefix,
         ),
         triage_agent=TriageAgentConfig(
             runner_labels=tuple(_required_list(triage_agent, "runner_labels")),
@@ -740,6 +756,24 @@ def _optional_str_list(data: dict[str, Any], key: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{key!r} must be a string list")
     return value
+
+
+def _parse_chat_prefix(lark: dict[str, Any], *, github_repo: str) -> str:
+    """The name prefix that marks a topic group as this project's.
+
+    Defaults to the repo's own name ("TheCloverLab/fived" -> "fived"), which is
+    what makes the naming contract work without config. Projects whose groups
+    predate the contract (or that want a label other than the repo name) set
+    `lark.chat_prefix` explicitly.
+    """
+    value = lark.get("chat_prefix")
+    if value is None:
+        return github_repo.rsplit("/", 1)[-1]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("lark.chat_prefix must be a non-empty string")
+    if CHAT_NAME_SEPARATOR in value:
+        raise ValueError(f"lark.chat_prefix must not contain {CHAT_NAME_SEPARATOR!r}")
+    return value.strip()
 
 
 def _parse_branch_chats(lark: dict[str, Any], *, main_chat_id: str) -> dict[str, str]:

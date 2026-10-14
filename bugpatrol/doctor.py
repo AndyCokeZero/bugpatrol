@@ -6,6 +6,7 @@ import os
 import shutil
 import struct
 import subprocess
+import tomllib
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,9 +43,11 @@ def run_doctor(
     github: GitHubCliIssuesClient,
     issue_fields: GitHubIssueFieldsClient,
     lark: LarkOpenApiMessengerClient | None = None,
+    projects_dir: Path | None = None,
 ) -> tuple[DoctorCheck, ...]:
     checks: list[DoctorCheck] = []
     checks.append(_check("config", lambda: _check_config(config)))
+    checks.append(_check("chat_isolation", lambda: _check_chat_isolation(config, projects_dir)))
     checks.append(_check("github_repo", lambda: _check_repo(config, github)))
     checks.append(_check("issue_types", lambda: _check_issue_types(config, github)))
     checks.append(_check("issue_fields", lambda: _check_issue_fields(config, issue_fields)))
@@ -69,6 +72,42 @@ def _check(name: str, fn: object) -> DoctorCheck:
 def _check_config(config: ProjectConfig) -> str:
     config.validate_against(default_field_specs())
     return config.github_repo
+
+
+def _check_chat_isolation(config: ProjectConfig, projects_dir: Path | None) -> str:
+    """Fail when another project claims the same topic-group prefix.
+
+    One Lark app serves every project, so the app's chat list is global and two
+    projects really do see the same groups. The name prefix is what tells them
+    apart, which makes "no two projects share a prefix" the invariant that keeps
+    isolation -- without it, a group whose branch exists in two repos is claimed
+    by both and the same topic becomes an issue in each (23 pairs, once).
+    """
+    if projects_dir is None:
+        return f"prefix {config.lark.chat_prefix!r}; no projects directory given to compare"
+    clashes: list[str] = []
+    for path in sorted(projects_dir.glob("*.toml")):
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(f"{path} is not valid TOML: {error}") from error
+        lark = data.get("lark")
+        if not isinstance(lark, dict):
+            continue
+        repo = str(data.get("github_repo") or "")
+        if not repo or repo == config.github_repo:
+            continue
+        declared = lark.get("chat_prefix")
+        prefix = declared.strip() if isinstance(declared, str) and declared.strip() else repo.rsplit("/", 1)[-1]
+        if prefix == config.lark.chat_prefix:
+            clashes.append(f"{repo} ({path.name})")
+    if clashes:
+        raise ValueError(
+            f"chat_prefix {config.lark.chat_prefix!r} is also claimed by "
+            + ", ".join(clashes)
+            + "; topic groups would be adopted by both projects"
+        )
+    return f"prefix {config.lark.chat_prefix!r} is this project's alone"
 
 
 def _check_repo(config: ProjectConfig, github: GitHubCliIssuesClient) -> str:

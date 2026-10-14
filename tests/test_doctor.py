@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import struct
 import subprocess
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from bugpatrol.config import load_project_config
 from bugpatrol.doctor import (
     _MEDIA_PROBE_TIMEOUT_SECONDS,
+    _check_chat_isolation,
     _check_media_command,
     _probe_image_bytes,
     _triage_agent_auth_command,
@@ -84,6 +86,7 @@ class DoctorTest(unittest.TestCase):
             [check.name for check in checks],
             [
                 "config",
+                "chat_isolation",
                 "github_repo",
                 "issue_types",
                 "issue_fields",
@@ -204,6 +207,47 @@ class DoctorTest(unittest.TestCase):
         self.assertIn(b"IHDR", image)
         # IHDR payload starts 8 bytes in: length(4) + tag(4), then width/height.
         self.assertEqual(image[16:24], struct.pack(">II", 8, 8))
+
+
+class ChatIsolationTest(unittest.TestCase):
+    """The prefix is the only thing keeping two projects off one group."""
+
+    def _projects_dir(self, body: str) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        (directory / "other.toml").write_text(body, encoding="utf-8")
+        return directory
+
+    def test_the_real_projects_each_own_their_prefix(self) -> None:
+        config = load_project_config(Path("projects/fived.toml"))
+
+        detail = _check_chat_isolation(config, Path("projects"))
+
+        self.assertEqual(detail, "prefix 'fived' is this project's alone")
+
+    def test_a_second_project_declaring_the_same_prefix_is_rejected(self) -> None:
+        config = load_project_config(Path("projects/fived.toml"))
+        directory = self._projects_dir(
+            'github_repo = "TheCloverLab/other"\n\n[lark]\nchat_prefix = "fived"\n'
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            _check_chat_isolation(config, directory)
+
+        self.assertIn("also claimed by", str(caught.exception))
+        self.assertIn("TheCloverLab/other", str(caught.exception))
+
+    def test_a_collision_through_the_defaulted_prefix_is_caught_too(self) -> None:
+        # A second repo also called "fived" derives "fived" without any config.
+        config = load_project_config(Path("projects/fived.toml"))
+        directory = self._projects_dir('github_repo = "OtherOrg/fived"\n\n[lark]\napp_id = "cli_x"\n')
+
+        with self.assertRaises(ValueError):
+            _check_chat_isolation(config, directory)
+
+    def test_without_a_projects_directory_the_check_says_so(self) -> None:
+        config = load_project_config(Path("projects/fived.toml"))
+
+        self.assertIn("no projects directory", _check_chat_isolation(config, None))
 
 
 if __name__ == "__main__":

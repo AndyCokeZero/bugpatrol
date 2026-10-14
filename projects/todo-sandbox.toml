@@ -8,6 +8,10 @@ app_id = "cli_aac97d050d385ee9"
 app_secret_env = "BUGPATROL_TODO_LARK_APP_SECRET"
 bot_open_id = "ou_cef931fa2df05ca6f8ae80cb2f3e6094"
 platform = "lark"
+# Topic groups are named "<prefix> · <branch>". The default is the repo's own
+# name, but this project's groups are labelled "BugPatrol Sandbox", so the
+# prefix has to say so.
+chat_prefix = "BugPatrol Sandbox"
 
 # Branch-scoped topic group: bugs reported here are analyzed against feature-demo.
 [[lark.branch_chats]]

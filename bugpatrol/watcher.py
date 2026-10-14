@@ -19,7 +19,7 @@ from bugpatrol.backfill import (
     scan_topic_batches,
 )
 from bugpatrol.chat_discovery import BranchChatDiscovery, apply_branch_chats
-from bugpatrol.config import ProjectConfig
+from bugpatrol.config import CHAT_NAME_SEPARATOR, ProjectConfig
 from bugpatrol.event_log import JsonlEventLog
 from bugpatrol.github_fields import GitHubIssueFieldsClient, GitHubIssueFieldsError
 from bugpatrol.intake_workflow import IntakeWorkflow
@@ -93,6 +93,7 @@ def _apply_discovered_chats(
     workflow: IntakeWorkflow,
     iteration: int,
     logger: JsonlEventLog | None,
+    unmatched_seen: set[tuple[str, ...]],
 ) -> ProjectConfig:
     """Refresh the scanned chat set from discovery, keeping the last one on error.
 
@@ -117,6 +118,31 @@ def _apply_discovered_chats(
             )
         return config
     updated = apply_branch_chats(base_config, discovery.branch_chats)
+    # A group named after one of this project's branches but carrying no
+    # "<prefix> · <branch>" name is not scanned, and silence there is
+    # indistinguishable from "no bugs were reported". Report it once per
+    # distinct set -- the refresh runs every poll, and a watcher that logs the
+    # same list 2880 times a day is a watcher nobody reads.
+    report = discovery.unmatched_chats
+    if report and report not in unmatched_seen:
+        unmatched_seen.add(report)
+        print(
+            f"watch-lark: {len(report)} chat(s) are named after branches of "
+            f"{base_config.github_repo} but carry no "
+            f"'{base_config.lark.chat_prefix}{CHAT_NAME_SEPARATOR}<branch>' name, so they are "
+            f"NOT scanned -- a topic group is only adopted when its name says which project "
+            f"owns it (they may well belong to another project): {list(report)}",
+            file=sys.stderr,
+        )
+        if logger is not None:
+            logger.write(
+                {
+                    "event": "watch_chat_unmatched",
+                    "iteration": iteration,
+                    "chat_prefix": base_config.lark.chat_prefix,
+                    "unmatched_chats": list(report),
+                }
+            )
     if updated.lark.branch_chats != config.lark.branch_chats:
         workflow.set_config(updated)
         print(
@@ -269,6 +295,7 @@ def run_polling_watcher(
             topic_failures: dict[str, int] = {}
             topic_outage_alerted: set[str] = set()
             logged_skips: set[tuple[str, str]] = set()
+            unmatched_seen: set[tuple[str, ...]] = set()
             while True:
                 iterations += 1
                 if branch_chat_discoverer is not None:
@@ -279,6 +306,7 @@ def run_polling_watcher(
                         workflow=workflow,
                         iteration=iterations,
                         logger=logger,
+                        unmatched_seen=unmatched_seen,
                     )
                 try:
                     scan = _scan_all_chats(

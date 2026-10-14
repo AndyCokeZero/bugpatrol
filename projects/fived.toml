@@ -13,12 +13,49 @@ platform = "lark"
 # Branch-scoped topic groups: bugs reported here are analyzed against the
 # declared feature branch instead of main.
 #
-# `feature-*` groups need no entry: CI creates one per branch named exactly
-# after it (fived `.github/workflows/bugpatrol-feature-topic.yml`) and the
-# watcher discovers them by that name, so a new branch is covered without a
-# config edit or a watcher restart. List a group here only when it breaks that
-# convention -- and remove it once its branch is gone, since an entry pins the
-# group into the scan set and would have bugs analyzed against a dead branch.
+# The group name carries the owning repo: CI creates one group per branch named
+# "<repo> · <branch>" (fived · feature-x), the main group "fived · main", so the
+# watcher discovers it by name and a new branch needs no config edit or restart
+# (fived `.github/workflows/bugpatrol-feature-topic.yml`). The prefix is what
+# keeps projects apart -- one Lark app serves every project, so matching on a
+# bare branch name claimed a group whose branch also existed in another repo,
+# and the same topic became an issue in both repos.
+#
+# TRANSITION: the groups below predate the prefix and are pinned so they keep
+# being scanned until they are renamed. Drop each entry once its group is named
+# "fived · <branch>": an entry pins the group into the scan set, so a stale one
+# would keep analyzing bugs against a branch that no longer exists.
+[[lark.branch_chats]]
+chat_id = "oc_9f076b6f8aa17a71c0f0e4f7b192f093"
+branch = "feature-ai-voice-webrtc"
+
+[[lark.branch_chats]]
+chat_id = "oc_3610e60b8d0f1f19eee46399d72e0511"
+branch = "feature-mobile-app-download-prompt"
+
+[[lark.branch_chats]]
+chat_id = "oc_a308056667efd6c485e59b414c64adb3"
+branch = "feature-my-community-v1-1"
+
+[[lark.branch_chats]]
+chat_id = "oc_69e7e63dcc026cebd5769d1dbc6d4330"
+branch = "feature-october-impr"
+
+[[lark.branch_chats]]
+chat_id = "oc_9f71a4118d31ad37881166c640e4625a"
+branch = "feature-sept-ui"
+
+[[lark.branch_chats]]
+chat_id = "oc_1d6d6bf851050582b92b07cbb01d799c"
+branch = "feature-september-optimization-user-location"
+
+[[lark.branch_chats]]
+chat_id = "oc_f3539e61d4311a356de061b743cd48c8"
+branch = "feature-support-more-language"
+
+[[lark.branch_chats]]
+chat_id = "oc_1939de35af8b5692d3b8c0b2d8f25e1b"
+branch = "feature-verification-impr"
 
 # GitHub login -> Lark open_id，用于分诊/追问消息里真正 @ 到人
 [lark.user_open_ids]

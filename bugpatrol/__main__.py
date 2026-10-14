@@ -524,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 github=GitHubCliIssuesClient(gh=config.github_cli),
                 issue_fields=GitHubIssueFieldsClient(gh=config.github_cli),
+                projects_dir=args.path.parent,
             )
             if not all(check.ok for check in checks):
                 print(json.dumps([check.__dict__ for check in checks], ensure_ascii=False), file=sys.stderr)
@@ -647,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
             github=GitHubCliIssuesClient(gh=config.github_cli),
             issue_fields=GitHubIssueFieldsClient(gh=config.github_cli),
             lark=lark,
+            projects_dir=args.project_config.parent,
         )
         print(json.dumps([check.__dict__ for check in checks], ensure_ascii=False))
         return 0 if all(check.ok for check in checks) else 1
