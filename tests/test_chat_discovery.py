@@ -73,7 +73,11 @@ class DiscoverBranchChatsTest(unittest.TestCase):
         self.assertEqual(discovery.branch_chats, {})
         self.assertEqual(discovery.unmatched_chats, ())
 
-    def test_chat_whose_prefixed_branch_is_gone_is_reported_not_adopted(self) -> None:
+    def test_chat_whose_prefixed_branch_is_gone_is_reported_as_archived(self) -> None:
+        # The name is right and the branch is not, so this is not the same
+        # problem as an un-prefixed name: renaming is the fix for that one,
+        # archiving the group is the fix for this one. Keeping them in one list
+        # made the watcher describe a correctly-named group as mis-named.
         discovery = discover_branch_chats(
             lark=FakeChatLister((("oc_stale", f"{PREFIX} · feature-deleted"),)),
             github=FakeBranchLister(("main", "feature-moments")),
@@ -81,7 +85,23 @@ class DiscoverBranchChatsTest(unittest.TestCase):
         )
 
         self.assertEqual(discovery.branch_chats, {})
-        self.assertEqual(discovery.unmatched_chats, (f"{PREFIX} · feature-deleted",))
+        self.assertEqual(discovery.archived_chats, (f"{PREFIX} · feature-deleted",))
+        self.assertEqual(discovery.unmatched_chats, ())
+
+    def test_the_two_unclaimed_kinds_are_never_mixed_together(self) -> None:
+        discovery = discover_branch_chats(
+            lark=FakeChatLister(
+                (
+                    ("oc_legacy", "feature-moments"),
+                    ("oc_stale", f"{PREFIX} · feature-deleted"),
+                )
+            ),
+            github=FakeBranchLister(("main", "feature-moments")),
+            config=CONFIG,
+        )
+
+        self.assertEqual(discovery.unmatched_chats, ("feature-moments",))
+        self.assertEqual(discovery.archived_chats, (f"{PREFIX} · feature-deleted",))
 
     def test_main_group_name_maps_to_the_main_branch(self) -> None:
         discovery = discover_branch_chats(

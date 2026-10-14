@@ -126,7 +126,9 @@ class StaticDiscoverer:
         self.branch_chats = branch_chats
 
     def resolve(self) -> BranchChatDiscovery:
-        return BranchChatDiscovery(branch_chats=dict(self.branch_chats), unmatched_chats=())
+        return BranchChatDiscovery(
+            branch_chats=dict(self.branch_chats), unmatched_chats=(), archived_chats=()
+        )
 
 
 class ExplodingDiscoverer:

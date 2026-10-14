@@ -93,7 +93,7 @@ def _apply_discovered_chats(
     workflow: IntakeWorkflow,
     iteration: int,
     logger: JsonlEventLog | None,
-    unmatched_seen: set[tuple[str, ...]],
+    unmatched_seen: set[tuple[tuple[str, ...], tuple[str, ...]]],
 ) -> ProjectConfig:
     """Refresh the scanned chat set from discovery, keeping the last one on error.
 
@@ -118,29 +118,41 @@ def _apply_discovered_chats(
             )
         return config
     updated = apply_branch_chats(base_config, discovery.branch_chats)
-    # A group named after one of this project's branches but carrying no
-    # "<prefix> · <branch>" name is not scanned, and silence there is
-    # indistinguishable from "no bugs were reported". Report it once per
-    # distinct set -- the refresh runs every poll, and a watcher that logs the
-    # same list 2880 times a day is a watcher nobody reads.
-    report = discovery.unmatched_chats
-    if report and report not in unmatched_seen:
+    # A group this project owns but does not scan is silence that looks exactly
+    # like "no bugs were reported". Two ways to end up there, and they need
+    # different fixes, so they are reported as the two separate things they are:
+    # a name we refuse to guess at, and a name that is right but whose branch is
+    # gone. Report once per distinct set -- the refresh runs every poll, and a
+    # watcher that logs the same list 2880 times a day is a watcher nobody reads.
+    report = (discovery.unmatched_chats, discovery.archived_chats)
+    if any(report) and report not in unmatched_seen:
         unmatched_seen.add(report)
-        print(
-            f"watch-lark: {len(report)} chat(s) are named after branches of "
-            f"{base_config.github_repo} but carry no "
-            f"'{base_config.lark.chat_prefix}{CHAT_NAME_SEPARATOR}<branch>' name, so they are "
-            f"NOT scanned -- a topic group is only adopted when its name says which project "
-            f"owns it (they may well belong to another project): {list(report)}",
-            file=sys.stderr,
-        )
+        if discovery.unmatched_chats:
+            print(
+                f"watch-lark: {len(discovery.unmatched_chats)} chat(s) are named after branches "
+                f"of {base_config.github_repo} but carry no "
+                f"'{base_config.lark.chat_prefix}{CHAT_NAME_SEPARATOR}<branch>' name, so they are "
+                f"NOT scanned -- a topic group is only adopted when its name says which project "
+                f"owns it (they may well belong to another project): "
+                f"{list(discovery.unmatched_chats)}",
+                file=sys.stderr,
+            )
+        if discovery.archived_chats:
+            print(
+                f"watch-lark: {len(discovery.archived_chats)} chat(s) carry the "
+                f"'{base_config.lark.chat_prefix}' prefix but their branch is gone, so they are "
+                f"NOT scanned -- the name is right and the branch is not, so archiving the group "
+                f"is the fix, not renaming it: {list(discovery.archived_chats)}",
+                file=sys.stderr,
+            )
         if logger is not None:
             logger.write(
                 {
                     "event": "watch_chat_unmatched",
                     "iteration": iteration,
                     "chat_prefix": base_config.lark.chat_prefix,
-                    "unmatched_chats": list(report),
+                    "unmatched_chats": list(discovery.unmatched_chats),
+                    "archived_chats": list(discovery.archived_chats),
                 }
             )
     if updated.lark.branch_chats != config.lark.branch_chats:
@@ -295,7 +307,7 @@ def run_polling_watcher(
             topic_failures: dict[str, int] = {}
             topic_outage_alerted: set[str] = set()
             logged_skips: set[tuple[str, str]] = set()
-            unmatched_seen: set[tuple[str, ...]] = set()
+            unmatched_seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
             while True:
                 iterations += 1
                 if branch_chat_discoverer is not None:

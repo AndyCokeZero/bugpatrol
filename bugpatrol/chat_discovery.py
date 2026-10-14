@@ -41,18 +41,24 @@ class BranchLister(Protocol):
 
 @dataclass(frozen=True)
 class BranchChatDiscovery:
-    """Chat id -> branch, plus the names that might be ours but were not claimed.
+    """Chat id -> branch, plus the groups that were seen and deliberately not claimed.
 
-    `unmatched_chats` is a migration signal, not a dump of every group the bot
-    sits in: it holds groups that carry this project's prefix but whose branch
-    is gone (an archived feature group), and un-prefixed groups named after one
-    of this project's live branches (the pre-contract naming). Groups belonging
-    to another project are silently skipped -- they are not this project's to
-    report on.
+    Neither tuple is a dump of every group the bot sits in: groups belonging to
+    another project are silently skipped, since they are not this project's to
+    report on. What is left is two groups an operator may need to act on, and
+    the two need *different* actions -- which is why they are not one list:
+
+    `unmatched_chats` -- un-prefixed groups named after one of this project's
+    live branches (the pre-contract naming). The name is the problem, so the fix
+    is to rename the group.
+    `archived_chats` -- groups carrying this project's prefix whose branch is
+    gone. The name is right and the branch is not, so renaming would not help:
+    the group needs archiving.
     """
 
     branch_chats: dict[str, str]
     unmatched_chats: tuple[str, ...]
+    archived_chats: tuple[str, ...]
 
 
 def _split_chat_name(name: str) -> tuple[str, str] | None:
@@ -89,6 +95,7 @@ def discover_branch_chats(
     declared = set(config.lark.branch_chats or {})
     matched: dict[str, str] = {}
     unmatched: list[str] = []
+    archived: list[str] = []
     for chat_id, name in lark.list_bot_chats():
         if chat_id == config.lark.chat_id or chat_id in declared:
             continue
@@ -106,8 +113,12 @@ def discover_branch_chats(
         if branch == "main" or branch in branches:
             matched[chat_id] = branch
         elif branch:
-            unmatched.append(raw)
-    return BranchChatDiscovery(branch_chats=matched, unmatched_chats=tuple(unmatched))
+            archived.append(raw)
+    return BranchChatDiscovery(
+        branch_chats=matched,
+        unmatched_chats=tuple(unmatched),
+        archived_chats=tuple(archived),
+    )
 
 
 def apply_branch_chats(config: ProjectConfig, branch_chats: dict[str, str]) -> ProjectConfig:
