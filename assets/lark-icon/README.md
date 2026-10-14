@@ -30,8 +30,8 @@ node scripts/console_api.mjs version publish cli_aac97d050d385ee9 --version <ver
 ## `group-icon.png` — Lark **bug-report group** avatar
 
 Amber beetle under a patrol searchlight cone on full-bleed midnight blue.
-Applied to every BugPatrol bug-report topic group (FiveD Bugs and its
-per-branch `feature-*` children, plus the sandbox groups).
+Applied to every BugPatrol bug-report topic group (fived's `fived · main` and
+its per-branch `fived · feature-*` children, plus the sandbox groups).
 
 It is full-bleed, so the circular crop only removes background corners — no
 circle-safe fitting needed. `group-icon.png` is a plain 512 LANCZOS resize of
@@ -39,8 +39,8 @@ circle-safe fitting needed. `group-icon.png` is a plain 512 LANCZOS resize of
 
 New `feature-*` groups inherit this automatically: fived's
 `.github/workflows/bugpatrol-feature-topic.yml` re-uploads the **current**
-avatar of the FiveD Bugs group rather than hardcoding an `image_key`. So
-changing the icon means updating FiveD Bugs plus a one-off sweep of the
+avatar of the `fived · main` group rather than hardcoding an `image_key`. So
+changing the icon means updating `fived · main` plus a one-off sweep of the
 existing groups:
 
 ```

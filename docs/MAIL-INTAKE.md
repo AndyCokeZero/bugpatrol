@@ -137,7 +137,7 @@ app_secret_env = "BUGPATROL_LARK_APP_SECRET"
 
 ### 专属 Lark 群(2026-08-19 定稿,bot 管理)
 
-- 名称:「fived 邮件 bug」,**话题群(topic mode)**,私有,FiveD Bugs 同款图标 + 同款 20 名成员。
+- 名称:「fived 邮件 bug」,**话题群(topic mode)**,私有,`fived · main` 同款图标 + 同款 20 名成员。
 - chat_id:`oc_8ac023afccc18f7cad5c08056c68021a`
 - 所有权:**无群主,由 bugpatrol bot 管理**(创建者 + 群管理员 `bot_manager_id_list=[cli_aac97d050d385ee9]`)。这是「仅 bot 建 topic」的关键:有群主(人)的群 bot 会被夺权(232038/232017)。
 - 建群姿势(实测,文档滞后):`POST /im/v1/chats` body `chat_mode:"topic"` + **不带 owner_id**(ownerless → bot 全权)+ `user_id_list` 一次性带成员;bot 自任管理员 = `POST /im/v1/chats/:id/managers/add_managers?member_id_type=app_id` body `{"manager_ids":["<app_id>"]}`(需 scope `im:chat.managers:write_only`,1.0.110 已加);改头像 = `PUT /im/v1/chats/:id` body `{"avatar":"<image_key>"}`(image_key 由 `POST /im/v1/images` image_type=avatar 上传)。

@@ -1,7 +1,8 @@
 # BugPatrol — TheCloverLab/weaver
 #
 # 阶段一：只做分诊。没有 [fix] 段 = 不自动修复、不提 PR。
-# 上报群：「FiveD weaver bug」oc_846c95a5799b96e96343a849daf3b618（话题模式）
+# 上报群：「weaver · main」oc_846c95a5799b96e96343a849daf3b618（话题模式）
+# 分支群按「weaver · <branch>」命名，watcher 靠前缀归属（见 projects/fived.toml 的同名注释）。
 #
 # weaver 是 monorepo：Go 后端（service/ api/ app/）+ console/ 后台管理页。
 # issue 统一进 TheCloverLab/weaver，靠 [owners.paths] 按目录定责。
