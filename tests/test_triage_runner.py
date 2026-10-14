@@ -119,7 +119,13 @@ class TriageRunnerTest(unittest.TestCase):
 
     def test_prepare_triage_run_surfaces_openspec_owner_without_whitelisting(self) -> None:
         config = load_project_config(Path("projects/todo-sandbox.toml"))
-        with tempfile.TemporaryDirectory() as tmp:
+        # The shipped config's provider is deepseek, which refuses to build an
+        # invocation without a key. The key is irrelevant here -- nothing runs
+        # the agent -- so supply a dummy rather than requiring the ambient env
+        # (CI has no DEEPSEEK_API_KEY, which had this test red since 2026-09-29).
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"DEEPSEEK_API_KEY": "sk-test"}
+        ):
             root = Path(tmp)
             prd_root = root / config.prd.cache_path
             change_dir = prd_root / "changes" / "todo-empty-state"

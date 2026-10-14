@@ -1277,7 +1277,13 @@ class RunCiFeedbackFailureTest(unittest.TestCase):
 
 class RunCiFixEndToEndTest(unittest.TestCase):
     def test_ci_fixed_edits_pushes_and_records_marker(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        # `prepare_fix_run` builds a deepseek invocation, which refuses to build
+        # without a key. Nothing here runs the agent (the command is swapped out
+        # below), so supply a dummy rather than requiring the ambient env (CI has
+        # no DEEPSEEK_API_KEY, which had this test red since 2026-09-29).
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"DEEPSEEK_API_KEY": "sk-test"}
+        ):
             root = Path(tmp)
             base_repo = _make_fix_remote(root)
             config = replace(_sandbox_config(), fix=replace(_sandbox_config().fix, verify={"ok": "true"}, setup={}))
