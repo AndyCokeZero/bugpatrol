@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import io
 import json
+import os
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
 from bugpatrol.agents import (
     DEEPSEEK_ANTHROPIC_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
+    AgentInvocation,
     build_triage_agent_invocation,
     detect_sandbox_denial,
+    is_bare_gateway_rejection,
+    is_retryable_agent_failure,
     is_transient_agent_failure,
     load_agent_json,
     parse_claude_token_usage,
+    probe_model_available,
 )
 from bugpatrol.config import load_project_config, parse_project_config
 
@@ -317,6 +324,9 @@ class IsTransientAgentFailureTest(unittest.TestCase):
     def test_keeps_credential_and_balance_errors_fatal(self) -> None:
         # Retrying these just triples the cost of a failure a human must fix:
         # the account state is identical on every attempt.
+        # The bare 400 is here because the *log alone* cannot settle it — no
+        # diagnostic in the body. `is_retryable_agent_failure` adds a model
+        # probe for exactly that shape; see IsRetryableAgentFailureTest.
         for message in (
             "Failed to authenticate. API Error: 401 Insufficient balance. Manage your billing here: https://opencode.ai",
             'API Error: 402 {"error":{"message":"Insufficient Balance","type":"unknown_error"}}',
@@ -341,6 +351,147 @@ class IsTransientAgentFailureTest(unittest.TestCase):
         self.assertFalse(is_transient_agent_failure(""))
         self.assertFalse(is_transient_agent_failure(None))
         self.assertFalse(is_transient_agent_failure(json.dumps({"type": "result", "is_error": False})))
+
+
+def _deepseek_invocation(model: str = DEEPSEEK_DEFAULT_MODEL) -> AgentInvocation:
+    return AgentInvocation(
+        provider="deepseek",
+        command=[],
+        env={
+            "ANTHROPIC_BASE_URL": DEEPSEEK_ANTHROPIC_BASE_URL,
+            "ANTHROPIC_API_KEY": "test-key",
+            "ANTHROPIC_AUTH_TOKEN": "test-key",
+        },
+        model=model,
+    )
+
+
+class BareGatewayRejectionTest(unittest.TestCase):
+    """The gateway's `{"model": ...}` 400 carries no diagnosis at all."""
+
+    def test_matches_a_body_with_only_the_model(self) -> None:
+        self.assertTrue(
+            is_bare_gateway_rejection('API Error: 400 {"model":"deepseek-v4.1-flash"}')
+        )
+
+    def test_does_not_match_a_structured_error_body(self) -> None:
+        # The gateway *does* diagnose real refusals; those must stay fatal and
+        # must not be mistaken for the undiagnosable shape.
+        for message in (
+            'API Error: 400 {"type":"error","error":{"type":"api_error","message":"Upstream request failed: Model is unavailable."}}',
+            'API Error: 400 {"type":"error","error":{"type":"MissingSessionID","message":"Request is missing x-opencode-session"}}',
+            'API Error: 402 {"error":{"message":"Insufficient Balance","type":"unknown_error"}}',
+            "Failed to authenticate. API Error: 401 Insufficient balance.",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(is_bare_gateway_rejection(message))
+
+    def test_does_not_match_other_statuses(self) -> None:
+        self.assertFalse(is_bare_gateway_rejection('API Error: 503 {"model":"x"}'))
+
+
+class IsRetryableAgentFailureTest(unittest.TestCase):
+    """A bare 400 is retried only when the model still answers a probe."""
+
+    def test_retries_a_bare_400_when_the_model_still_answers(self) -> None:
+        with mock.patch(
+            "bugpatrol.agents.probe_model_available", return_value=True
+        ) as probe:
+            self.assertTrue(
+                is_retryable_agent_failure(
+                    _result_event('API Error: 400 {"model":"deepseek-v4.1-flash"}'),
+                    _deepseek_invocation(),
+                )
+            )
+        probe.assert_called_once_with(_deepseek_invocation())
+
+    def test_keeps_a_bare_400_fatal_when_the_model_is_gone(self) -> None:
+        with mock.patch("bugpatrol.agents.probe_model_available", return_value=False):
+            self.assertFalse(
+                is_retryable_agent_failure(
+                    _result_event('API Error: 400 {"model":"deepseek-v4-flash"}'),
+                    _deepseek_invocation("deepseek-v4-flash"),
+                )
+            )
+
+    def test_network_failures_skip_the_probe(self) -> None:
+        # Already a known-transient shape: no need to spend a request.
+        with mock.patch("bugpatrol.agents.probe_model_available") as probe:
+            for message in (
+                "API Error: 503 Service is too busy.",
+                "API Error: socket hang up",
+            ):
+                with self.subTest(message=message):
+                    self.assertTrue(
+                        is_retryable_agent_failure(
+                            _result_event(message), _deepseek_invocation()
+                        )
+                    )
+        probe.assert_not_called()
+
+    def test_credential_errors_never_probe(self) -> None:
+        with mock.patch("bugpatrol.agents.probe_model_available") as probe:
+            for message in (
+                'API Error: 402 {"error":{"message":"Insufficient Balance","type":"unknown_error"}}',
+                "Failed to authenticate. API Error: 401 Insufficient balance.",
+            ):
+                with self.subTest(message=message):
+                    self.assertFalse(
+                        is_retryable_agent_failure(
+                            _result_event(message), _deepseek_invocation()
+                        )
+                    )
+        probe.assert_not_called()
+
+
+class ProbeModelAvailableTest(unittest.TestCase):
+    def _response(self, status: int = 200) -> mock.MagicMock:
+        response = mock.MagicMock()
+        response.status = status
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
+    def test_sends_one_token_to_the_agent_endpoint(self) -> None:
+        with mock.patch(
+            "urllib.request.urlopen", return_value=self._response()
+        ) as urlopen:
+            self.assertTrue(probe_model_available(_deepseek_invocation()))
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, DEEPSEEK_ANTHROPIC_BASE_URL + "/v1/messages")
+        payload = json.loads(request.data)
+        self.assertEqual(payload["model"], DEEPSEEK_DEFAULT_MODEL)
+        self.assertEqual(payload["max_tokens"], 1)
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers["x-api-key"], "test-key")
+        # The OpenCode gateway cannot route a request without a session id, so
+        # omitting it would make every probe fail and nothing ever retry.
+        self.assertIn("x-opencode-session", headers)
+
+    def test_http_error_is_not_available(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://example.invalid", 400, "bad request", {}, io.BytesIO(b"{}")
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=error):
+            self.assertFalse(probe_model_available(_deepseek_invocation()))
+
+    def test_unreachable_endpoint_is_not_available(self) -> None:
+        with mock.patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("no route")
+        ):
+            self.assertFalse(probe_model_available(_deepseek_invocation()))
+
+    def test_missing_credentials_stay_fatal_without_a_request(self) -> None:
+        invocation = AgentInvocation(
+            provider="deepseek",
+            command=[],
+            env={"ANTHROPIC_BASE_URL": DEEPSEEK_ANTHROPIC_BASE_URL},
+            model=DEEPSEEK_DEFAULT_MODEL,
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                self.assertFalse(probe_model_available(invocation))
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from bugpatrol.agents import (
     agent_error_from_stdout,
     build_triage_agent_invocation,
     detect_sandbox_denial,
-    is_transient_agent_failure,
+    is_retryable_agent_failure,
     load_agent_json,
     parse_claude_token_usage,
 )
@@ -407,8 +407,12 @@ def execute_triage_run(
         # Failed, pings the reporter, and leans on the watcher to start over
         # from scratch on another runner anyway. Credential/account errors and
         # a gateway-refused model reproduce on every attempt, so those keep
-        # failing on the spot.
-        if not final_attempt and is_transient_agent_failure(completed.stdout):
+        # failing on the spot. A bare gateway 400 (`{"model": ...}`, no
+        # diagnostic) is settled with a one-token probe: the model answering
+        # means the run died to a hiccup and should retry.
+        if not final_attempt and is_retryable_agent_failure(
+            completed.stdout, plan.invocation
+        ):
             return "agent_crashed"
         mark_triage_failed(
             config=config,
@@ -536,9 +540,24 @@ def _write_turn_log(output_dir: Path, stdout: str | bytes | None, stderr: str | 
     stdout = _coerce_text(stdout)
     stderr = _coerce_text(stderr)
     if stdout:
+        _keep_previous(output_dir / "agent-turns.jsonl")
         (output_dir / "agent-turns.jsonl").write_text(stdout)
     if stderr:
+        _keep_previous(output_dir / "agent-stderr.log")
         (output_dir / "agent-stderr.log").write_text(stderr)
+
+
+def _keep_previous(path: Path) -> None:
+    """Keep the prior attempt's log before this one replaces it.
+
+    The run directory is keyed by issue number, so a GitHub re-run of the same
+    issue writes over the failing attempt's log — exactly the evidence needed
+    to diagnose it (2026-10-15: 14 of 16 failing logs were destroyed by the
+    re-runs that were being used to rule the failure out). One previous
+    attempt is enough to compare against, and it keeps the directory bounded.
+    """
+    if path.exists():
+        path.replace(path.with_name(f"{path.stem}.previous{path.suffix}"))
 
 
 def record_triage_run_start(

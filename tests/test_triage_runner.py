@@ -444,6 +444,24 @@ class TriageRunnerTest(unittest.TestCase):
             self.assertEqual((out / "agent-turns.jsonl").read_text(), '{"stream": "event"}\n')
             self.assertEqual((out / "agent-stderr.log").read_text(), "partial stderr\n")
 
+    def test_write_turn_log_keeps_the_previous_attempt(self) -> None:
+        # #6746: a GitHub re-run of the same issue overwrote the failing
+        # attempt's log, destroying the evidence mid-investigation.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _write_turn_log(out, '{"attempt": "first"}\n', "first stderr\n")
+            _write_turn_log(out, '{"attempt": "second"}\n', "second stderr\n")
+            self.assertEqual(
+                (out / "agent-turns.jsonl").read_text(), '{"attempt": "second"}\n'
+            )
+            self.assertEqual(
+                (out / "agent-turns.previous.jsonl").read_text(),
+                '{"attempt": "first"}\n',
+            )
+            self.assertEqual(
+                (out / "agent-stderr.previous.log").read_text(), "first stderr\n"
+            )
+
     def test_execute_triage_run_retries_a_transient_api_crash_before_final_attempt(self) -> None:
         # Reproduces #6246: the gateway dropped the response mid-stream after
         # 133 turns and 7 minutes, and the run was thrown away and marked

@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import urllib.error
+import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -34,6 +38,20 @@ _TRANSIENT_AGENT_FAILURE_MARKERS = (
 # `API Error: 503 Service is too busy...`; the code is the whole signal, and
 # spelling the messages out here would miss the next 5xx shape.
 _TRANSIENT_AGENT_FAILURE_RE = re.compile(r"API Error: 5\d\d")
+
+# A gateway rejection whose body carries no diagnostic at all — just the echoed
+# model name, e.g. `API Error: 400 {"model":"deepseek-v4.1-flash"}`. Real
+# rejections (a retired model, a disabled model, a bad credential, a missing
+# session) come back as a structured `{"type":"error","error":{...}}` body, so
+# this shape says nothing about *why* the request was refused. It kills ~4% of
+# triage runs (chronic since 2026-09-11) and every observed instance cleared on
+# a re-run of the identical context, which is why it is probed, not trusted.
+_BARE_GATEWAY_REJECTION_RE = re.compile(r"^API Error: 400\s+(\{.*\})\s*$", re.DOTALL)
+
+# The claude CLI's endpoint when the provider config does not override it.
+DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+ANTHROPIC_API_VERSION = "2023-06-01"
+MODEL_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -249,9 +267,14 @@ def is_transient_agent_failure(stdout: str | None) -> bool:
     strings cannot turn a real failure into a retry loop.
 
     Deliberately an allowlist. Credential and account errors (401 auth, 402
-    "Insufficient Balance", a model the gateway refuses with a bare 400) are
-    identical on every attempt: retrying them triples the cost of a failure
-    that a human has to fix anyway, so anything unrecognized stays fatal.
+    "Insufficient Balance") are identical on every attempt: retrying them
+    triples the cost of a failure that a human has to fix anyway, so anything
+    unrecognized stays fatal.
+
+    A bare gateway 400 is the one rejection this cannot decide from the log
+    alone, so callers that can afford a probe should use
+    `is_retryable_agent_failure` instead — it keeps this allowlist and adds a
+    one-token model probe for that shape.
     """
     error = agent_error_from_stdout(stdout)
     if not error:
@@ -259,6 +282,109 @@ def is_transient_agent_failure(stdout: str | None) -> bool:
     if any(marker in error for marker in _TRANSIENT_AGENT_FAILURE_MARKERS):
         return True
     return _TRANSIENT_AGENT_FAILURE_RE.search(error) is not None
+
+
+def is_bare_gateway_rejection(error: str) -> bool:
+    """True for a 400 whose body is only the echoed model name.
+
+    That body carries no error type and no message, so it identifies neither a
+    permanent refusal nor a transient one. A structured body
+    (`{"type":"error","error":{...}}`) is a real diagnosis and is not matched.
+    """
+    match = _BARE_GATEWAY_REJECTION_RE.match(error.strip())
+    if match is None:
+        return False
+    try:
+        body = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return False
+    return isinstance(body, dict) and "model" in body and "error" not in body
+
+
+def probe_model_available(
+    invocation: AgentInvocation,
+    *,
+    timeout_seconds: float = MODEL_PROBE_TIMEOUT_SECONDS,
+) -> bool:
+    """Send one minimal request to the agent's own endpoint/model.
+
+    True only when it answers 200. A retired or disabled model answers with a
+    structured 4xx on every attempt, so this separates that permanent case from
+    a gateway hiccup without retrying the expensive agent run to find out.
+
+    Endpoint and credentials come from the environment the agent process
+    actually ran with (`{**os.environ, **invocation.env}`), so the probe
+    authenticates exactly as the agent did.
+    """
+    env = {**os.environ, **invocation.env}
+    base_url = env.get("ANTHROPIC_BASE_URL") or DEFAULT_ANTHROPIC_BASE_URL
+    api_key = env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")
+    model = invocation.model
+    if not api_key or not model:
+        # Both are required to run the agent at all, so reaching here means the
+        # invocation is inconsistent. Stay fatal (the pre-probe behaviour)
+        # rather than retrying blind, but say so instead of failing silently.
+        print(
+            "warning: cannot probe the model endpoint "
+            f"(api_key={'set' if api_key else 'missing'}, model={model or 'missing'}); "
+            "treating the agent failure as fatal",
+            file=sys.stderr,
+        )
+        return False
+    headers = {
+        "content-type": "application/json",
+        "anthropic-version": ANTHROPIC_API_VERSION,
+        "x-api-key": api_key,
+        "authorization": f"Bearer {api_key}",
+        "user-agent": "bugpatrol-model-probe/1.0",
+    }
+    # The OpenCode gateway cannot route a request without a session id.
+    if "opencode.ai" in base_url:
+        headers["x-opencode-session"] = str(uuid.uuid4())
+    body = json.dumps(
+        {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+    ).encode()
+    url = base_url.rstrip("/") + "/v1/messages"
+    request = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as error:
+        print(
+            f"warning: model probe for {model} answered HTTP {error.code}; "
+            "treating the agent failure as fatal",
+            file=sys.stderr,
+        )
+        return False
+    except OSError as error:
+        # Unreachable/timed-out probe: the run already failed, and retrying a
+        # network that just refused a one-token request is not worth budget.
+        print(
+            f"warning: model probe for {model} could not reach {url}: {error}; "
+            "treating the agent failure as fatal",
+            file=sys.stderr,
+        )
+        return False
+
+
+def is_retryable_agent_failure(stdout: str | None, invocation: AgentInvocation) -> bool:
+    """True when a fresh attempt is likely to clear the agent's failure.
+
+    `is_transient_agent_failure` decides from the error text alone. This adds
+    the one shape that text cannot settle: a bare gateway 400 is retried only
+    when the same model still answers a one-token probe. A retired model stays
+    fatal; the ~4% of runs killed by a gateway hiccup get the retry they need.
+    """
+    if is_transient_agent_failure(stdout):
+        return True
+    error = agent_error_from_stdout(stdout)
+    if not error or not is_bare_gateway_rejection(error):
+        return False
+    return probe_model_available(invocation)
 
 
 def build_triage_agent_invocation(
